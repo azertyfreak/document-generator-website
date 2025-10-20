@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Contract Generator - Full Form (Clean)</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; background: #fafafa; }
+    h1 { margin: 0 0 8px 0; }
+    .card { background:#fff; border:1px solid #e5e7eb; border-radius:12px; padding:16px; margin-bottom:16px; }
+    label { display:block; font-weight:600; margin-top:10px; }
+    input, textarea, select, button { width:100%; padding:10px; border-radius:10px; border:1px solid #e5e7eb; font-size:14px; }
+    button { background:#111827; color:#fff; cursor:pointer; }
+    button[disabled] { opacity:.6; cursor:not-allowed; }
+    .row { display:grid; grid-template-columns:1fr; gap:16px; }
+    @media (min-width: 1000px) { .row { grid-template-columns: 1fr 1fr; } }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+    .muted { color: #6b7280; }
+    .ok { color: #065f46; }
+    .err { color: #991b1b; white-space: pre-wrap; }
+    .section { border:1px dashed #e5e7eb; border-radius:10px; padding:12px; margin-top:12px; }
+    .spinner { display:inline-block; width:18px; height:18px; border:3px solid #ddd; border-top-color:#111827; border-radius:50%; animation:spin 1s linear infinite; vertical-align:middle; margin-left:8px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    code { background:#f3f4f6; padding:2px 6px; border-radius:6px; }
+    .actions { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  </style>
+</head>
+<body>
+  <h1>Contract Generator - Full Form (Clean)</h1>
+  <div class="muted">This page builds a full form from your API's /schema. Enter your API base URL and click Load schema.</div>
+
+  <div class="card">
+    <label>API Base URL (Render)</label>
+    <input id="apiBase" placeholder="https://document-generator-xhfr.onrender.com"/>
+    <div class="muted" style="margin-top:6px;">Example: <code>https://document-generator-xhfr.onrender.com</code></div>
+    <div class="actions" style="margin-top:10px;">
+      <button id="btnHealth">Health</button>
+      <button id="btnLoadSchema">Load schema</button>
+      <button id="btnExample">Fill example</button>
+      <span id="loading" style="display:none" class="spinner" aria-label="Working..."></span>
+    </div>
+    <div id="tip" class="muted" style="margin-top:8px;"></div>
+    <div id="status" style="margin-top:8px;"></div>
+  </div>
+
+  <div id="formCard" class="card" style="display:none;">
+    <h2 style="margin:0 0 8px 0;">Form</h2>
+    <div id="sections"></div>
+    <div class="actions" style="margin-top:12px;">
+      <button id="btnValidate">Validate</button>
+      <button id="btnGenerate">Generate DOCX</button>
+    </div>
+    <div id="msg" class="muted" style="margin-top:8px;"></div>
+  </div>
+
+  <div class="card">
+    <details>
+      <summary>Advanced & Debug</summary>
+      <label>JSON</label>
+      <textarea id="jsonOut" style="min-height:240px;"></textarea>
+      <label>Validation errors</label>
+      <pre id="errorsBox" class="err" style="min-height:120px;"></pre>
+      <div class="actions" style="margin-top:8px;">
+        <button id="btnFormToJson">Form to JSON</button>
+        <button id="btnJsonToForm">JSON to Form</button>
+      </div>
+      <div style="margin-top:10px" class="muted">
+        Check the browser console (F12 -> Console) for request logs.
+      </div>
+    </details>
+  </div>
+
+<script>
+"use strict";
+var schema = null;
+
+function setLoading(on) {
+  document.getElementById("loading").style.display = on ? "inline-block" : "none";
+  var ids = ["btnHealth","btnLoadSchema","btnExample"];
+  for (var i=0; i<ids.length; i++) {
+    var el = document.getElementById(ids[i]);
+    if (el) el.disabled = on;
+  }
+}
+
+function showStatus(type, text) {
+  var s = document.getElementById("status");
+  s.className = type === "ok" ? "ok" : (type === "err" ? "err" : "muted");
+  s.textContent = text;
+}
+
+function showTip(text) { document.getElementById("tip").textContent = text || ""; }
+
+function normalizeBaseUrl(url) {
+  if (!url) return "";
+  url = url.trim();
+  if (url.endsWith("/")) url = url.slice(0, -1);
+  return url;
+}
+
+function mixedContentWarning(apiBase) {
+  try {
+    if (location.protocol === "https:" && apiBase.indexOf("http://") === 0) {
+      return "Your site is HTTPS but your API is HTTP. Browsers block mixed content. Use an HTTPS API URL.";
+    }
+  } catch (e) {}
+  return "";
+}
+
+function el(tag, attrs, children) {
+  if (!attrs) attrs = {};
+  if (!children) children = [];
+  var e = document.createElement(tag);
+  var k;
+  for (k in attrs) {
+    if (k === "class") e.className = attrs[k];
+    else if (k === "for") e.htmlFor = attrs[k];
+    else e.setAttribute(k, attrs[k]);
+  }
+  for (var i=0; i<children.length; i++) {
+    var c = children[i];
+    if (typeof c === "string") e.appendChild(document.createTextNode(c));
+    else if (c) e.appendChild(c);
+  }
+  return e;
+}
+function fieldId(path) { return "f_" + path.join("__"); }
+
+function renderField(path, key, propSchema) {
+  var id = fieldId(path.concat([key]));
+  var label = el("label", {"for": id}, [key.replace(/_/g, " ")]);
+  var input;
+  var t = propSchema.type;
+  if (Array.isArray(t)) t = t[0];
+
+  if (t === "boolean") input = el("input", {type:"checkbox", id:id}, []);
+  else if (t === "number" || t === "integer") input = el("input", {type:"number", id:id, step:"any"}, []);
+  else if (t === "string" && propSchema.format === "date") input = el("input", {type:"date", id:id}, []);
+  else if (t === "string" && propSchema.format === "email") input = el("input", {type:"email", id:id}, []);
+  else if (t === "string" && propSchema.enum) {
+    var sel = el("select", {id:id}, []);
+    sel.appendChild(el("option", {value:""}, ["- choose -"]));
+    for (var i=0; i<propSchema.enum.length; i++) {
+      var opt = String(propSchema.enum[i]);
+      sel.appendChild(el("option", {value:opt}, [opt]));
+    }
+    input = sel;
+  } else if (t === "string") input = el("input", {type:"text", id:id}, []);
+  else if (t === "object") return renderObject(path.concat([key]), propSchema, key);
+  else input = el("input", {type:"text", id:id}, []);
+
+  return el("div", {}, [label, input]);
+}
+
+function renderObject(path, objSchema, title) {
+  var section = el("div", {class:"section"}, []);
+  section.appendChild(el("h3", {}, [title.replace(/_/g, " ")]));
+  var grid = el("div", {class:"grid"}, []);
+  section.appendChild(grid);
+  var props = objSchema.properties || {};
+  var k, v;
+  for (k in props) {
+    v = props[k] || {};
+    if (v && v.type === "object") grid.appendChild(renderObject(path.concat([k]), v, k));
+    else grid.appendChild(renderField(path, k, v));
+  }
+  return section;
+}
+
+function buildForm(s) {
+  var sections = document.getElementById("sections");
+  sections.innerHTML = "";
+  var props = s.properties || {};
+  var k, v;
+  for (k in props) {
+    v = props[k];
+    sections.appendChild(renderObject([k], v, k));
+  }
+  document.getElementById("formCard").style.display = "block";
+}
+
+function setValueByPath(path, value) {
+  var id = fieldId(path);
+  var input = document.getElementById(id);
+  if (!input) return;
+  if (input.type === "checkbox") input.checked = Boolean(value);
+  else input.value = (value == null ? "" : value);
+}
+function getValueByPath(path) {
+  var id = fieldId(path);
+  var input = document.getElementById(id);
+  if (!input) return undefined;
+  if (input.type === "checkbox") return input.checked;
+  if (input.type === "number") return input.value ? Number(input.value) : undefined;
+  return input.value || undefined;
+}
+function objFromSchema(objSchema, basePath) {
+  var props = objSchema.properties || {};
+  var out = {};
+  var k, v, val;
+  for (k in props) {
+    v = props[k] || {};
+    if (v && v.type === "object") out[k] = objFromSchema(v, basePath.concat([k]));
+    else {
+      val = getValueByPath(basePath.concat([k]));
+      if (val !== undefined) out[k] = val;
+    }
+  }
+  return out;
+}
+function fillFormFromObject(obj, basePath) {
+  if (!basePath) basePath = [];
+  var k, v;
+  for (k in (obj || {})) {
+    v = obj[k];
+    if (v && typeof v === "object" && !Array.isArray(v)) fillFormFromObject(v, basePath.concat([k]));
+    else setValueByPath(basePath.concat([k]), v);
+  }
+}
+
+function fetchJson(url) {
+  return fetch(url, {mode:"cors"}).then(function(r){
+    if (!r.ok) return r.text().then(function(t){ throw new Error("HTTP "+r.status+" "+r.statusText+"\n"+t); });
+    return r.json();
+  });
+}
+
+function fetchText(url) {
+  return fetch(url, {mode:"cors"}).then(function(r){
+    return r.text().then(function(t){ return {ok:r.ok, status:r.status, statusText:r.statusText, text:t}; });
+  });
+}
+
+document.getElementById("btnHealth").addEventListener("click", function(){
+  var apiBase = normalizeBaseUrl(document.getElementById("apiBase").value);
+  if (!apiBase) { showStatus("err", "Please enter your API base URL."); return; }
+  var warn = mixedContentWarning(apiBase);
+  showTip(warn);
+  setLoading(true);
+  fetchText(apiBase + "/health").then(function(res){
+    if (res.ok && res.text.trim() === "ok") showStatus("ok", "Health OK");
+    else showStatus("err", "Health failed: " + res.status + " " + res.statusText + " - " + res.text);
+  }).catch(function(e){
+    showStatus("err", "Network error (health): " + e.message);
+  }).finally(function(){ setLoading(false); });
+});
+
+document.getElementById("btnLoadSchema").addEventListener("click", function(){
+  var apiBase = normalizeBaseUrl(document.getElementById("apiBase").value);
+  if (!apiBase) { showStatus("err", "Please enter your API base URL."); return; }
+  var warn = mixedContentWarning(apiBase);
+  showTip(warn);
+  setLoading(true);
+  fetchJson(apiBase + "/schema").then(function(s){
+    schema = s;
+    buildForm(schema);
+    showStatus("ok", "Schema loaded");
+  }).catch(function(e){
+    showStatus("err", "Schema load failed: " + e.message);
+  }).finally(function(){ setLoading(false); });
+});
+
+document.getElementById("btnExample").addEventListener("click", function(){
+  var example = {
+    "makelaar": {"naam":"Jan Jansen","biv_nummer":"123456","kantoor":"Immo Jansen","straat":"Stationsstraat","nummer":"12","postcode":"1000","gemeente":"Brussel"},
+    "verkoper": {"natuurlijk_persoon": true, "naam":"Piet","voornaam":"Pieter","contact":{"email":"piet@example.com","telefoonnummer":"012345678"}},
+    "koper": {"natuurlijk_persoon": true, "naam":"Klara","voornaam":"Klaartje","contact":{"email":"klara@example.com","telefoonnummer":"098765432"}},
+    "goed": {"straat":"Dorpsplein","nummer":"1","postcode":"8500","gemeente":"Kortrijk","land":"Belgie","aard":"Woning"},
+    "prijs": {"totaal":350000,"voorschot":{"bedrag":35000,"overschrijving":true,"als_voorschot":true},"saldo_koopsom":315000},
+    "genot":{"niet_verhuurd": true},
+    "roerende_goederen":{"geen": true}
+  };
+  fillFormFromObject(example, []);
+  document.getElementById("jsonOut").value = JSON.stringify(example, null, 2);
+});
+
+function validateContext(apiBase, ctx) {
+  return fetch(apiBase + "/validate", {
+    method:"POST", headers:{"Content-Type":"application/json"}, mode:"cors",
+    body: JSON.stringify({context: ctx})
+  }).then(function(r){
+    if (r.ok) return {ok:true, errors:[]};
+    return r.text().then(function(t){
+      try { var j = JSON.parse(t); return {ok:false, errors:(j.detail || [j])}; }
+      catch(e) { return {ok:false, errors:[{message:t}]}; }
+    });
+  });
+}
+
+function generateDocx(apiBase, ctx) {
+  return fetch(apiBase + "/genereer/docx", {
+    method:"POST", headers:{"Content-Type":"application/json"}, mode:"cors",
+    body: JSON.stringify({context: ctx})
+  }).then(function(r){
+    if (!r.ok) return r.text().then(function(t){ throw new Error("Generate failed: HTTP "+r.status+" "+r.statusText+"\n"+t); });
+    return r.blob();
+  }).then(function(blob){
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a"); a.href = url; a.download = "overeenkomst.docx";
+    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+  });
+}
+
+document.getElementById("btnValidate").addEventListener("click", function(){
+  var apiBase = normalizeBaseUrl(document.getElementById("apiBase").value);
+  var msg = document.getElementById("msg");
+  if (!schema) { msg.className="err"; msg.textContent="Load schema first."; return; }
+  var ctx = objFromSchema(schema, []);
+  validateContext(apiBase, ctx).then(function(v){
+    if (v.ok) { msg.className="ok"; msg.textContent="Valid OK"; document.getElementById("errorsBox").textContent=""; }
+    else {
+      msg.className="err"; msg.textContent="Validation errors.";
+      var lines = v.errors.map(function(e){ return "• " + (e.path || "") + " — " + (e.message || JSON.stringify(e)); });
+      document.getElementById("errorsBox").textContent = lines.join("\n");
+    }
+    document.getElementById("jsonOut").value = JSON.stringify(ctx, null, 2);
+  }).catch(function(e){
+    msg.className="err"; msg.textContent="Validate error: " + e.message;
+  });
+});
+
+document.getElementById("btnGenerate").addEventListener("click", function(){
+  var apiBase = normalizeBaseUrl(document.getElementById("apiBase").value);
+  var msg = document.getElementById("msg");
+  if (!schema) { msg.className="err"; msg.textContent="Load schema first."; return; }
+  var ctx = objFromSchema(schema, []);
+  validateContext(apiBase, ctx).then(function(v){
+    if (!v.ok) {
+      msg.className="err"; msg.textContent="Fix validation errors first (see below).";
+      var lines = v.errors.map(function(e){ return "• " + (e.path || "") + " — " + (e.message || JSON.stringify(e)); });
+      document.getElementById("errorsBox").textContent = lines.join("\n");
+      document.getElementById("jsonOut").value = JSON.stringify(ctx, null, 2);
+      return;
+    }
+    return generateDocx(apiBase, ctx).then(function(){
+      msg.className="ok"; msg.textContent="DOCX generated";
+    });
+  }).catch(function(e){
+    msg.className="err"; msg.textContent = e.message;
+  });
+});
+</script>
+</body>
+</html>
